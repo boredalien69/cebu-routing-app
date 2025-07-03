@@ -1,133 +1,133 @@
 
 import streamlit as st
 import pandas as pd
-import folium
-from folium import Marker
-from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from sklearn.cluster import KMeans
-import base64
-import time
+import folium
+from streamlit_folium import st_folium
+from datetime import datetime
+import re
 
-st.set_page_config(page_title="Cebu Routing App", layout="wide")
-st.title("📦 Cebu Routing Optimizer (Strict Excel Format)")
+st.set_page_config(layout="wide")
+st.title("📦 Cebu Delivery Route Optimization App")
 
-REQUIRED_COLUMNS = [
-    "Client", "Address", "Start Time", "End Time", "Time Type", "Order and Weight"
-]
+REQUIRED_COLUMNS = ["Client", "Address", "Start Time", "End Time", "Time Type", "Order and Weight"]
+geolocator = Nominatim(user_agent="cebu-routing-app")
 
-ors_key = st.text_input("🔑 Enter OpenRouteService API Key", type="password")
-uploaded_file = st.file_uploader("📁 Upload Excel File", type=["xlsx"])
-num_trucks = st.number_input("🚛 Number of Trucks", min_value=1, value=3)
+def parse_weight(text):
+    match = re.search(r"(\d+(\.\d+)?)\s*kg", text.lower())
+    return float(match.group(1)) if match else 0.0
 
-driver_names = []
-st.subheader("👥 Driver Names")
-for i in range(num_trucks):
-    name = st.text_input(f"Driver {i+1}", value=f"Driver {i+1}")
-    driver_names.append(name)
+uploaded_file = st.file_uploader("Upload your Excel delivery file", type=["xlsx"])
 
-if uploaded_file and ors_key:
-    try:
-        df = pd.read_excel(uploaded_file)
-        if list(df.columns) != REQUIRED_COLUMNS:
-            st.error(f"❌ Excel file must contain these exact columns: {REQUIRED_COLUMNS}")
-            st.stop()
+api_key = st.text_input("Enter your OpenRouteService API key", type="password")
+num_trucks = st.number_input("How many trucks are available?", min_value=1, max_value=20, step=1)
+start_point = st.text_input("Enter dispatch/start point (e.g. '8WVX+7HC Plant, S Jayme St, Mandaue, 6014 Cebu')")
 
-        if df["Time Type"].isnull().any() or not df["Time Type"].isin(["Strict", "Flexible"]).all():
-            st.error("❌ All rows must have a valid 'Time Type' as either 'Strict' or 'Flexible'.")
-            st.stop()
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
 
-    except Exception as e:
-        st.error(f"❌ Failed to read Excel: {e}")
+    if list(df.columns) != REQUIRED_COLUMNS:
+        st.error(f"❌ Excel file must have these exact columns: {REQUIRED_COLUMNS}")
         st.stop()
 
-    st.subheader("📄 Uploaded Data")
-    st.dataframe(df)
+    st.success("✅ File format is correct.")
 
-    geolocator = Nominatim(user_agent="cebu_router")
+    df["Weight (kg)"] = df["Order and Weight"].apply(parse_weight)
     df["Full Address"] = df["Address"].astype(str) + ", Cebu, Philippines"
     df["Latitude"] = None
     df["Longitude"] = None
-    df["Suggested"] = ""
+    df["Suggested"] = None
+
+    # Step 1: Attempt Geocoding
+    st.subheader("Step 1: Attempt Geocoding")
     failed_rows = []
 
-    st.subheader("🔄 Step 1: Attempt Geocoding")
-    with st.spinner("Trying to locate addresses..."):
-        for i, row in df.iterrows():
-            try:
-                location = geolocator.geocode(row["Full Address"], timeout=10)
-                if location:
-                    df.at[i, "Latitude"] = location.latitude
-                    df.at[i, "Longitude"] = location.longitude
+    for idx, row in df.iterrows():
+        addr = row["Full Address"]
+        try:
+            loc = geolocator.geocode(addr, timeout=10)
+            if loc:
+                df.at[idx, "Latitude"] = loc.latitude
+                df.at[idx, "Longitude"] = loc.longitude
+            else:
+                raw_loc = geolocator.geocode(row["Address"], timeout=10)
+                if raw_loc:
+                    df.at[idx, "Suggested"] = raw_loc.address
+                    failed_rows.append(idx)
                 else:
-                    failed_rows.append(i)
-                    time.sleep(1)
-                    results = geolocator.geocode(row["Address"] + ", Cebu", timeout=10)
-                    if results:
-                        df.at[i, "Suggested"] = results.address
-            except:
-                failed_rows.append(i)
-                df.at[i, "Suggested"] = ""
+                    failed_rows.append(idx)
+        except:
+            failed_rows.append(idx)
 
     if failed_rows:
         st.warning(f"{len(failed_rows)} address(es) could not be located. Review and fix below:")
-        df_failed = df.loc[failed_rows, ["Client", "Address", "Suggested"]].copy()
+
+        df_failed = df.loc[failed_rows].copy()
         new_inputs = {}
-        for idx in df_failed.index:
-            raw_suggestion = str(df_failed.at[idx, "Suggested"])
-            suggested = raw_suggestion.strip() if raw_suggestion and raw_suggestion != "None" else ""
-            if suggested:
-                display_text = f"Suggested for '{df_failed.at[idx, 'Address']}'"
-                new_inputs[idx] = st.text_input(display_text, value=suggested)
 
-        if st.button("🔁 Retry Geocoding with Fixes"):
-            for idx, new_addr in new_inputs.items():
-                try:
-                    loc = geolocator.geocode(new_addr, timeout=10)
-                    if loc:
-                        df.at[idx, "Latitude"] = loc.latitude
-                        df.at[idx, "Longitude"] = loc.longitude
-                        df.at[idx, "Full Address"] = new_addr
-                except:
-                    pass
-            failed_rows = df[df["Latitude"].isna()].index.tolist()
-            if len(failed_rows) == 0:
-                st.success("✅ All addresses geocoded successfully.")
+        st.subheader("📍 Review Problematic Addresses")
+
+        for idx, row in df_failed.iterrows():
+            client = row["Client"]
+            addr = row["Address"]
+            suggested = str(row.get("Suggested", "")).strip()
+
+            st.markdown(f"**Client:** {client}  
+**Original Address:** {addr}")
+
+            if suggested and suggested.lower() != "none":
+                choice = st.selectbox(
+                    f"Suggestion for '{addr}':",
+                    options=[addr, suggested],
+                    key=f"select_{idx}"
+                )
+                new_inputs[idx] = choice
             else:
-                st.warning(f"⚠️ Still {len(failed_rows)} unresolved addresses.")
+                manual = st.text_input(
+                    f"No suggestion for '{addr}' — enter manually:",
+                    key=f"manual_{idx}"
+                )
+                new_inputs[idx] = manual
 
-    valid_df = df.dropna(subset=["Latitude", "Longitude"])
+        if st.button("🔁 Retry Geocoding"):
+            for idx, new_addr in new_inputs.items():
+                if new_addr:
+                    try:
+                        loc = geolocator.geocode(new_addr + ", Cebu, Philippines", timeout=10)
+                        if loc:
+                            df.at[idx, "Latitude"] = loc.latitude
+                            df.at[idx, "Longitude"] = loc.longitude
+                            df.at[idx, "Full Address"] = new_addr
+                    except:
+                        pass
 
-    if len(valid_df) >= num_trucks:
-        if st.button("🚀 Start Optimization"):
-            kmeans = KMeans(n_clusters=num_trucks, random_state=42)
-            df.loc[valid_df.index, "Assigned Truck"] = kmeans.fit_predict(valid_df[["Latitude", "Longitude"]])
-            colors = ["red", "blue", "green", "orange", "purple"]
-            m = folium.Map(location=(10.3363, 123.9381), zoom_start=12)
-            Marker((10.3363, 123.9381), tooltip="🏭 Depot").add_to(m)
+    valid_coords = df.dropna(subset=["Latitude", "Longitude"])
 
-            for i, row in df.iterrows():
-                if pd.notna(row["Latitude"]):
-                    truck_id = int(row["Assigned Truck"]) if pd.notna(row["Assigned Truck"]) else 0
-                    driver_label = driver_names[truck_id] if truck_id < len(driver_names) else f"Truck {truck_id+1}"
-                    Marker(
-                        location=[row["Latitude"], row["Longitude"]],
-                        popup=f"{row['Client']}<br>{row['Address']}",
-                        tooltip=f"{driver_label}",
-                        icon=folium.Icon(color=colors[truck_id % len(colors)], icon="truck", prefix='fa')
-                    ).add_to(m)
+    if len(valid_coords) >= num_trucks:
+        st.success("✅ Enough valid addresses to proceed.")
+        optimize = st.button("🚀 Start Optimization")
 
-            st.subheader("🗺️ Route Map")
-            st_folium(m, width=700, height=500)
+        if optimize:
+            coords = valid_coords[["Latitude", "Longitude"]].to_numpy()
+            kmeans = KMeans(n_clusters=num_trucks, random_state=42).fit(coords)
+            valid_coords["Assigned Truck"] = kmeans.labels_
 
-            html_map = m._repr_html_()
-            b64_map = base64.b64encode(html_map.encode()).decode()
-            map_link = f'<a href="data:text/html;base64,{b64_map}" download="cebu_route_map.html">📥 Download Map (HTML)</a>'
-            st.markdown(map_link, unsafe_allow_html=True)
+            st.subheader("📍 Optimized Map with Routes")
+            m = folium.Map(location=[valid_coords["Latitude"].mean(), valid_coords["Longitude"].mean()], zoom_start=11)
 
-            st.subheader("⬇️ Download Optimized Excel")
-            df_export = df[["Client", "Address", "Full Address", "Latitude", "Longitude", "Assigned Truck"]]
-            st.download_button("Download Updated Excel", data=df_export.to_excel(index=False), file_name="OptimizedRoutes.xlsx")
+            for _, row in valid_coords.iterrows():
+                folium.Marker(
+                    [row["Latitude"], row["Longitude"]],
+                    popup=f"{row['Client']} ({row['Address']}) - Truck {int(row['Assigned Truck']) + 1}"
+                ).add_to(m)
 
+            st_data = st_folium(m, width=1000, height=600)
+
+            st.download_button(
+                label="📥 Download Optimized Excel",
+                data=valid_coords.to_excel(index=False),
+                file_name="Optimized_Routes.xlsx"
+            )
     else:
-        st.info("🛑 Not enough geocoded points for clustering. Please fix unresolved addresses above.")
+        st.warning("⚠️ Not enough valid addresses to run optimization. Please fix address issues first.")
