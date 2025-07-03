@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 import base64
 
 st.set_page_config(page_title="Cebu Delivery Route Planner", layout="wide")
-st.title("🚚 Cebu Delivery Route Optimizer (with Geocode Suggestions)")
+st.title("🚚 Cebu Delivery Route Optimizer (Safe & Suggestive)")
 
 ors_key = st.text_input("🔑 Enter your OpenRouteService API Key", type="password")
 uploaded_file = st.file_uploader("📁 Upload Excel File", type=["xlsx"])
@@ -58,10 +58,13 @@ if uploaded_file and ors_key:
         st.warning(f"⚠️ {len(failed_rows)} address(es) could not be geocoded. Suggestions shown below.")
         failed_df = df.iloc[failed_rows].copy()
         failed_df["Suggested Fix"] = [suggestions[i] for i in failed_rows]
+        st.subheader("🔍 Review Suggested Address Fixes")
         st.dataframe(failed_df[["Client", "Address", "Suggested Fix"]])
 
     valid_coords = df.dropna(subset=["Latitude", "Longitude"])
-    if len(valid_coords) >= num_trucks:
+    if len(valid_coords) < num_trucks:
+        st.error("❌ Not enough valid geocoded addresses to perform clustering. Please fix the suggestions above and try again.")
+    else:
         kmeans = KMeans(n_clusters=num_trucks, random_state=42)
         df.loc[valid_coords.index, "Assigned Truck"] = kmeans.fit_predict(valid_coords[["Latitude", "Longitude"]])
 
