@@ -10,7 +10,11 @@ import base64
 import time
 
 st.set_page_config(page_title="Cebu Routing App", layout="wide")
-st.title("📦 Cebu Routing Optimizer with Suggestions & Manual Start")
+st.title("📦 Cebu Routing Optimizer (Strict Excel Format)")
+
+REQUIRED_COLUMNS = [
+    "Client", "Address", "Start Time", "End Time", "Time Type", "Order and Weight"
+]
 
 ors_key = st.text_input("🔑 Enter OpenRouteService API Key", type="password")
 uploaded_file = st.file_uploader("📁 Upload Excel File", type=["xlsx"])
@@ -23,13 +27,24 @@ for i in range(num_trucks):
     driver_names.append(name)
 
 if uploaded_file and ors_key:
-    df = pd.read_excel(uploaded_file)
+    try:
+        df = pd.read_excel(uploaded_file)
+        if list(df.columns) != REQUIRED_COLUMNS:
+            st.error(f"❌ Excel file must contain these exact columns: {REQUIRED_COLUMNS}")
+            st.stop()
+
+        if df["Time Type"].isnull().any() or not df["Time Type"].isin(["Strict", "Flexible"]).all():
+            st.error("❌ All rows must have a valid 'Time Type' as either 'Strict' or 'Flexible'.")
+            st.stop()
+
+    except Exception as e:
+        st.error(f"❌ Failed to read Excel: {e}")
+        st.stop()
+
     st.subheader("📄 Uploaded Data")
     st.dataframe(df)
 
     geolocator = Nominatim(user_agent="cebu_router")
-    depot_coords = (10.3363, 123.9381)
-
     df["Full Address"] = df["Address"].astype(str) + ", Cebu, Philippines"
     df["Latitude"] = None
     df["Longitude"] = None
