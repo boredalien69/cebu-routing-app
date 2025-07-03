@@ -1,31 +1,25 @@
-
 import streamlit as st
 import pandas as pd
 import re
 from geopy.geocoders import Nominatim
-from sklearn.cluster import KMeans
-import folium
-from streamlit_folium import st_folium
 
 st.set_page_config(layout="wide")
-st.title("🛣️ Step 5: Final Optimization with Driver Assignment & Smart Geocoding")
+st.title("📍 Step 3 (Rebuilt): Persistent Geocoding Fixes")
 
 REQUIRED_COLUMNS = ["Client", "Address", "Start Time", "End Time", "Time Type", "Order and Weight"]
-geolocator = Nominatim(user_agent="cebu-routing-step5")
+geolocator = Nominatim(user_agent="cebu-routing-rebuilt")
 
 def parse_weight(text):
     match = re.search(r"(\d+(\.\d+)?)\s*kg", str(text).lower())
     return float(match.group(1)) if match else 0.0
 
-uploaded_file = st.file_uploader("Upload your Excel delivery file", type=["xlsx"])
-num_trucks = st.number_input("Number of Trucks", min_value=1, max_value=20, value=3)
-start_point = st.text_input("Enter Starting Address for All Trucks", value="S Jayme St, Mandaue, 6014 Cebu")
-
+# Step 1: File upload and validation
+uploaded_file = st.file_uploader("Upload Excel delivery file", type=["xlsx"])
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
     if list(df.columns) != REQUIRED_COLUMNS:
-        st.error(f"❌ Excel must have: {REQUIRED_COLUMNS}")
+        st.error(f"❌ Excel must contain: {REQUIRED_COLUMNS}")
         st.stop()
 
     df["Weight (kg)"] = df["Order and Weight"].apply(parse_weight)
@@ -34,67 +28,78 @@ if uploaded_file:
     df["Longitude"] = None
     df["Suggested"] = None
 
-    failed_rows = []
-
-    st.subheader("📍 Attempt Geocoding")
-
-    for idx, row in df.iterrows():
-        addr = row["Full Address"]
-        try:
-            loc = geolocator.geocode(addr, timeout=10)
-            if loc:
-                df.at[idx, "Latitude"] = loc.latitude
-                df.at[idx, "Longitude"] = loc.longitude
-            else:
-                backup = geolocator.geocode(row["Address"], timeout=10)
-                if backup:
-                    df.at[idx, "Suggested"] = backup.address
+    # Step 2: Only geocode once unless reset
+    if "geocode_results" not in st.session_state:
+        failed_rows = []
+        for idx, row in df.iterrows():
+            addr = row["Full Address"]
+            try:
+                loc = geolocator.geocode(addr, timeout=10)
+                if loc:
+                    df.at[idx, "Latitude"] = loc.latitude
+                    df.at[idx, "Longitude"] = loc.longitude
+                else:
+                    backup = geolocator.geocode(row["Address"], timeout=10)
+                    if backup:
+                        df.at[idx, "Suggested"] = backup.address
+                    failed_rows.append(idx)
+            except:
                 failed_rows.append(idx)
-        except:
-            failed_rows.append(idx)
+        st.session_state["geocode_df"] = df
+        st.session_state["geocode_failed"] = failed_rows
+        st.session_state["geocode_fixes"] = {}
 
-    valid_coords = df.dropna(subset=["Latitude", "Longitude"]).copy()
+    df = st.session_state["geocode_df"]
+    failed_rows = st.session_state["geocode_failed"]
+
+    st.subheader("📄 Uploaded Data")
+    st.dataframe(df)
 
     if failed_rows:
-        st.warning(f"{len(failed_rows)} address(es) could not be located. Review and fix below:")
-        df_failed = df.loc[failed_rows].copy()
-        new_inputs = {}
+        st.warning(f"{len(failed_rows)} address(es) could not be geocoded. Please fix below:")
 
-        for idx, row in df_failed.iterrows():
+        for idx in failed_rows:
+            row = df.loc[idx]
+            suggestion = row.get("Suggested", None)
             st.markdown(f"**Client:** {row['Client']}  
 **Original Address:** `{row['Address']}`")
-            suggestion = row.get("Suggested", None)
 
-            if isinstance(suggestion, str) and suggestion.strip().lower() != "none" and suggestion.strip() != "":
+            if suggestion and isinstance(suggestion, str) and suggestion.strip().lower() != "none":
                 choice = st.selectbox(
-                    f"Choose address for '{row['Client']}'",
+                    f"Select suggestion for '{row['Client']}'",
                     options=[row["Address"], suggestion],
                     key=f"dropdown_{idx}"
                 )
-                new_inputs[idx] = choice
+                st.session_state["geocode_fixes"][idx] = choice
             else:
                 manual = st.text_input(
-                    f"Enter address manually for '{row['Client']}':",
+                    f"Enter address manually for '{row['Client']}'",
                     key=f"manual_{idx}"
                 )
-                new_inputs[idx] = manual
+                if manual:
+                    st.session_state["geocode_fixes"][idx] = manual
 
         if st.button("🔁 Retry Geocoding with Fixes"):
-            for idx, new_addr in new_inputs.items():
-                if new_addr:
-                    try:
-                        loc = geolocator.geocode(new_addr + ", Cebu, Philippines", timeout=10)
-                        if loc:
-                            df.at[idx, "Latitude"] = loc.latitude
-                            df.at[idx, "Longitude"] = loc.longitude
-                            df.at[idx, "Full Address"] = new_addr
-                            st.success(f"✅ Fixed: {new_addr}")
-                        else:
-                            st.error(f"❌ Still failed: {new_addr}")
-                    except Exception as e:
-                        st.error(f"❌ Error on '{new_addr}': {e}")
+            for idx, new_addr in st.session_state["geocode_fixes"].items():
+                try:
+                    loc = geolocator.geocode(new_addr + ", Cebu, Philippines", timeout=10)
+                    if loc:
+                        df.at[idx, "Latitude"] = loc.latitude
+                        df.at[idx, "Longitude"] = loc.longitude
+                        df.at[idx, "Full Address"] = new_addr
+                        st.success(f"✅ Fixed: {new_addr}")
+                    else:
+                        st.error(f"❌ Still failed: {new_addr}")
+                except Exception as e:
+                    st.error(f"❌ Error geocoding '{new_addr}': {e}")
 
-        valid_coords = df.dropna(subset=["Latitude", "Longitude"]).copy()
+            # Refresh session data
+            st.session_state["geocode_df"] = df
+            st.session_state["geocode_failed"] = df[df["Latitude"].isna()].index.tolist()
+
+    # Show final result table
+    st.subheader("✅ Geocoding Result Preview")
+    st.dataframe(df)
 
     if valid_coords.shape[0] < num_trucks:
         st.warning("⚠️ Not enough valid addresses for requested trucks.")
