@@ -78,7 +78,7 @@ if uploaded_file and ors_key:
             suggested = raw_suggestion.strip() if raw_suggestion and raw_suggestion != "None" else ""
             if suggested:
                 display_text = f"Suggested for '{df_failed.at[idx, 'Address']}'"
-                new_inputs[idx] = st.selectbox(display_text, options=[suggested], key=f"dropdown_{idx}")
+                new_inputs[idx] = st.text_input(display_text, value=suggested)
 
         if st.button("🔁 Retry Geocoding with Fixes"):
             for idx, new_addr in new_inputs.items():
